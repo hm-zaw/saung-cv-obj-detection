@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Object Detection Test</title>
+</head>
+<body>
+    <h1>Object Detection Test</h1>
+    <img id="testImage" src="/cv_test.jpeg" style="max-width: 800px;" />
+    <canvas id="testCanvas" style="border: 1px solid black; max-width: 800px;"></canvas>
+    <div id="results"></div>
+
+    <script type="module">
+        // Simple test to load image and show it
+        const img = document.getElementById('testImage');
+        const canvas = document.getElementById('testCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        img.onload = () => {
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            ctx.drawImage(img, 0, 0);
+            
+            document.getElementById('results').innerHTML = `
+                <p>Image loaded: ${img.naturalWidth} x ${img.naturalHeight}</p>
+                <p>Go to <a href="/">main app</a> and upload this image for testing</p>
+            `;
+        };
+    </script>
+</body>
+</html>
