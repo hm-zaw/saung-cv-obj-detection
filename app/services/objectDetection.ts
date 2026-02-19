@@ -276,7 +276,7 @@ export class ObjectDetectionService {
 
         const confidence = obj * maxClassScore;
 
-        if (confidence > 0.15) {
+        if (confidence > 0.05) {
             const x = (cx - w / 2) / this.inputSize;
             const y = (cy - h / 2) / this.inputSize;
             const width = w / this.inputSize;
@@ -379,71 +379,60 @@ export class ObjectDetectionService {
   }
 
   async detectObjects(mediaSource: HTMLVideoElement | HTMLImageElement): Promise<Detection[]> {
-    if (!this.modelLoaded || !this.session) {
-      console.warn('⚠️ Model not ready yet, skipping detection...', {
-        modelLoaded: this.modelLoaded,
-        session: !!this.session
-      });
-      return []; // Return empty array instead of throwing error
+    if (!this.modelLoaded || !this.session) return [];
+
+    const isVideo = mediaSource instanceof HTMLVideoElement;
+    if (isVideo) {
+      const video = mediaSource as HTMLVideoElement;
+      if (video.readyState < 2 || video.paused || video.ended || video.seeking) return [];
+      // Wait for next video frame so we capture a real frame (avoids black/stale frames)
+      const videoWithRFC = video as unknown as { requestVideoFrameCallback?(cb: () => void): number };
+      if (typeof videoWithRFC.requestVideoFrameCallback === 'function') {
+        return new Promise<Detection[]>((resolve, reject) => {
+          videoWithRFC.requestVideoFrameCallback!(() => {
+            this.runDetection(mediaSource).then(resolve).catch(reject);
+          });
+        });
+      }
     }
 
+    return this.runDetection(mediaSource);
+  }
+
+  private async runDetection(mediaSource: HTMLVideoElement | HTMLImageElement): Promise<Detection[]> {
+    const session = this.session;
+    if (!session) return [];
     try {
       const isVideo = mediaSource instanceof HTMLVideoElement;
       const width = isVideo ? mediaSource.videoWidth : mediaSource.naturalWidth;
       const height = isVideo ? mediaSource.videoHeight : mediaSource.naturalHeight;
 
-      if (width === 0 || height === 0) {
-        // For video, this might happen during loading - just return empty
-        return [];
-      }
+      if (width === 0 || height === 0) return [];
 
-      // For video, check if it's actually playing and has valid frame
-      if (isVideo) {
-        const video = mediaSource as HTMLVideoElement;
-        if (video.readyState < 2 || video.paused || video.ended) {
-          return [];
-        }
-        // Skip detection if video is seeking or buffering to avoid blocking
-        if (video.seeking || video.networkState === video.NETWORK_LOADING) {
-          return [];
-        }
-      }
-
-      // Create canvas from media source with optimized settings
       const canvas = document.createElement('canvas');
       canvas.width = width;
       canvas.height = height;
-      const ctx = canvas.getContext('2d', { 
-        alpha: false, // No transparency needed, faster
-        desynchronized: true, // Allow async rendering
-        willReadFrequently: true // Optimize for frequent reads
-      });
+      const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
       if (!ctx) throw new Error('Could not get canvas context');
 
-      // Fast canvas drawing without smoothing for better performance
-      ctx.imageSmoothingEnabled = false;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'low';
       ctx.drawImage(mediaSource, 0, 0);
 
-      // Preprocess image
       const inputTensor = this.preprocessImage(canvas);
 
-      // Run inference
-      
-      const inputName = this.session.inputNames[0] || 'images';
+      const inputName = session.inputNames[0] || 'images';
       const feeds: Record<string, ort.Tensor> = {};
       feeds[inputName] = inputTensor;
-      
-      // Run inference with timeout to prevent blocking video
-      const inferencePromise = this.session.run(feeds);
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Inference timeout')), 500) // Increased to 500ms timeout
+
+      const inferencePromise = session.run(feeds);
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Inference timeout')), 500)
       );
-      
-      const outputs = await Promise.race([inferencePromise, timeoutPromise]) as any;
-      
-      // Use the actual output name from the model
-      const outputName = this.session.outputNames[0];
-      
+
+      const outputs = await Promise.race([inferencePromise, timeoutPromise]) as Record<string, ort.Tensor>;
+
+      const outputName = session.outputNames[0];
       let outputTensor = outputs[outputName];
       
       if (!outputTensor) {
