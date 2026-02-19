@@ -299,9 +299,17 @@ export class ObjectDetectionService {
         }
     }
 
-    const finalDetections = this.applyNMS(detections);
+    const afterNMS = this.applyNMS(detections);
+    // One detection per class: keep only the highest-confidence box for each class
+    const byClass: Record<string, Detection> = {};
+    for (const d of afterNMS) {
+      if (!byClass[d.class] || d.confidence > byClass[d.class].confidence) {
+        byClass[d.class] = d;
+      }
+    }
+    const finalDetections = Object.values(byClass);
     if (!this.hasLoggedModelInfo && (detections.length > 0 || finalDetections.length > 0)) {
-      console.log('Detection pipeline:', { raw: detections.length, afterNMS: finalDetections.length });
+      console.log('Detection pipeline:', { raw: detections.length, afterNMS: afterNMS.length, onePerClass: finalDetections.length });
     }
     return finalDetections;
   }

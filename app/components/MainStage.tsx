@@ -90,8 +90,9 @@ export default function MainStage({ onDetectionsChange }: MainStageProps) {
     detectOnce,
   } = useObjectDetection(videoRef, imageRef, {
     enabled: isStreaming,
-    detectionInterval: 50, // ~20 FPS - optimal balance between smoothness and performance
-    confidenceThreshold: 0.05, // Match internal threshold for local camera
+    detectionInterval: 50,
+    // Higher threshold for uploaded image/video = fewer duplicates, scalable clean detections
+    confidenceThreshold: inputSource === "file" ? 0.05 : 0.05,
   });
 
   // Pass detections to parent component
