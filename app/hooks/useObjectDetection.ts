@@ -39,9 +39,12 @@ export function useObjectDetection(
       setError(null);
       
       try {
+        console.log('🔄 Starting model loading...');
         await objectDetectionService.loadModel();
+        console.log('✅ Model loaded successfully!');
         setIsModelLoaded(true);
       } catch (err) {
+        console.error('❌ Model loading failed:', err);
         setError(err instanceof Error ? err.message : 'Failed to load model');
       } finally {
         setIsModelLoading(false);
@@ -66,6 +69,7 @@ export function useObjectDetection(
         startDetection();
       } else if (video) {
         video.addEventListener('loadeddata', startDetection, { once: true });
+        video.addEventListener('playing', startDetection, { once: true });
       }
     };
 
@@ -77,11 +81,7 @@ export function useObjectDetection(
       }
     };
 
-    if (video) {
-      if (video.style.display !== 'none') {
-        startForVideo();
-      }
-    } 
+    if (video) startForVideo(); 
     
     if (image) {
       // Check if image is effectively active (e.g. source is set and not hidden)
@@ -111,11 +111,13 @@ export function useObjectDetection(
       const image = imageRef?.current;
       let mediaSource: HTMLVideoElement | HTMLImageElement | null = null;
 
-      // Determine active source
-      if (video && video.readyState >= 2 && video.style.display !== 'none') {
-        mediaSource = video;
-      } else if (image && image.complete && image.naturalWidth > 0 && image.style.display !== 'none') {
-        mediaSource = image;
+      if (video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+        const computedStyle = window.getComputedStyle(video);
+        const isVisible = computedStyle.display !== 'none' && computedStyle.opacity !== '0';
+        if (isVisible || video.srcObject) mediaSource = video;
+      } else if (image && image.complete && image.naturalWidth > 0) {
+        const computedStyle = window.getComputedStyle(image);
+        if (computedStyle.display !== 'none' && computedStyle.opacity !== '0') mediaSource = image;
       }
 
       if (!mediaSource) return;
@@ -126,20 +128,16 @@ export function useObjectDetection(
           return; // Silently skip if model not ready
         }
 
-        // Skip detection if media source is not ready
         if (mediaSource instanceof HTMLVideoElement) {
-          if (mediaSource.readyState < 2 || mediaSource.paused || mediaSource.seeking) {
-            return; // Skip this frame to avoid blocking video
-          }
+          if (mediaSource.readyState < 2 || mediaSource.paused || mediaSource.seeking) return;
         }
 
         const results = await objectDetectionService.detectObjects(mediaSource);
-        
-        // Filter by confidence threshold
+
         const filteredDetections = results.filter(
           detection => detection.confidence >= confidenceThreshold
         );
-        
+
         setDetections(filteredDetections);
       } catch (err) {
         // Silently skip errors to avoid disrupting video playback
@@ -151,8 +149,8 @@ export function useObjectDetection(
     };
 
     // For video, set up non-blocking continuous detection
-    if (videoRef.current && videoRef.current.style.display !== 'none') {
-      // Use Web Workers approach with setTimeout for non-blocking detection
+    if (videoRef.current && (videoRef.current.srcObject || videoRef.current.src)) {
+      // Non-blocking detection loop for video
       const detectLoop = () => {
         if (!isDetectingRef.current) return;
         
@@ -168,7 +166,6 @@ export function useObjectDetection(
       // Start the detection loop with initial delay to let video start
       setTimeout(detectLoop, 100);
     } else {
-      // For images, run detection once
       detect();
     }
     

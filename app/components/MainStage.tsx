@@ -91,7 +91,7 @@ export default function MainStage({ onDetectionsChange }: MainStageProps) {
   } = useObjectDetection(videoRef, imageRef, {
     enabled: isStreaming,
     detectionInterval: 50, // ~20 FPS - optimal balance between smoothness and performance
-    confidenceThreshold: 0.25,
+    confidenceThreshold: 0.15, // Match internal detection threshold
   });
 
   // Pass detections to parent component
@@ -146,13 +146,20 @@ export default function MainStage({ onDetectionsChange }: MainStageProps) {
   // Handle local camera
   const handleLocalCamera = useCallback(async () => {
     if (inputSource === "local") {
+      console.log('Stopping local camera...');
       stopLocalStream();
       setInputSource(null);
     } else {
+      console.log('Starting local camera...');
       disconnect();
       clearFileUpload();
       setInputSource("local");
-      await startLocalStream();
+      try {
+        await startLocalStream();
+        console.log('Local camera started successfully');
+      } catch (error) {
+        console.error('Failed to start local camera:', error);
+      }
     }
   }, [inputSource, disconnect, startLocalStream, stopLocalStream, clearFileUpload]);
 
@@ -281,6 +288,9 @@ export default function MainStage({ onDetectionsChange }: MainStageProps) {
               isStreaming && !isImageActive ? "opacity-100" : "opacity-0"
             } transition-opacity duration-500`}
             style={{ display: isStreaming && !isImageActive ? 'block' : 'none' }}
+            onLoadedData={() => {
+              console.log('Video loaded and ready for detection');
+            }}
           />
           
           {/* Image Element (hidden until image file) */}
@@ -452,9 +462,12 @@ export default function MainStage({ onDetectionsChange }: MainStageProps) {
                       LOAD TEST IMAGE
                     </button>
                     
-                    {isModelLoaded && inputSource === "file" && (
+                    {isModelLoaded && inputSource === "local" && (
                       <button
-                        onClick={() => detectOnce()}
+                        onClick={() => {
+                          console.log('Manual detection triggered');
+                          detectOnce();
+                        }}
                         className="px-4 py-2 bg-emerald-600/20 border border-emerald-600 text-ink font-mono text-xs hover:bg-emerald-600/30 transition-colors"
                       >
                         RUN DETECTION

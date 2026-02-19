@@ -96,12 +96,10 @@ export class ObjectDetectionService {
       
       // Log input/output metadata
       for (const name of this.session.inputNames) {
-        const input = this.session.inputMetadata[name];
-        console.log(`Input ${name}:`, input);
+        console.log(`Input ${name}:`, (this.session.inputMetadata as unknown as Record<string, unknown>)[name]);
       }
       for (const name of this.session.outputNames) {
-        const output = this.session.outputMetadata[name];
-        console.log(`Output ${name}:`, output);
+        console.log(`Output ${name}:`, (this.session.outputMetadata as unknown as Record<string, unknown>)[name]);
       }
       
       // Validate model has expected inputs/outputs
@@ -134,39 +132,17 @@ export class ObjectDetectionService {
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Could not get canvas context');
 
-    // Create a temporary canvas for resizing with better quality
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = this.inputSize;
     tempCanvas.height = this.inputSize;
     const tempCtx = tempCanvas.getContext('2d');
     if (!tempCtx) throw new Error('Could not get temp canvas context');
 
-    // Use faster image scaling for real-time performance
-    tempCtx.imageSmoothingEnabled = false; // Disable for speed
+    tempCtx.imageSmoothingEnabled = true;
+    tempCtx.imageSmoothingQuality = 'low';
 
-    // Calculate aspect ratio preserving resize
-    const aspectRatio = canvas.width / canvas.height;
-    let drawWidth = this.inputSize;
-    let drawHeight = this.inputSize;
-    let offsetX = 0;
-    let offsetY = 0;
-
-    if (aspectRatio > 1) {
-      // Landscape
-      drawHeight = this.inputSize / aspectRatio;
-      offsetY = (this.inputSize - drawHeight) / 2;
-    } else {
-      // Portrait
-      drawWidth = this.inputSize * aspectRatio;
-      offsetX = (this.inputSize - drawWidth) / 2;
-    }
-
-    // Fill with gray background (letterboxing)
-    tempCtx.fillStyle = '#808080';
-    tempCtx.fillRect(0, 0, this.inputSize, this.inputSize);
-
-    // Draw and resize image with aspect ratio preservation
-    tempCtx.drawImage(canvas, offsetX, offsetY, drawWidth, drawHeight);
+    // Use simple stretch to 640x640 for consistent model input (works for both image and video)
+    tempCtx.drawImage(canvas, 0, 0, this.inputSize, this.inputSize);
     const resizedImageData = tempCtx.getImageData(0, 0, this.inputSize, this.inputSize);
 
     // Convert to RGB and normalize to [0, 1]
@@ -181,15 +157,8 @@ export class ObjectDetectionService {
       input[pixelIndex + 2 * this.inputSize * this.inputSize] = resizedData[i + 2] / 255.0; // B
     }
 
-    // Only log preprocessing info on first run
     if (!this.hasLoggedModelInfo) {
-      console.log('Preprocessed image:', {
-        originalSize: `${canvas.width}x${canvas.height}`,
-        inputSize: `${this.inputSize}x${this.inputSize}`,
-        aspectRatio,
-        drawSize: `${drawWidth}x${drawHeight}`,
-        offset: `${offsetX},${offsetY}`
-      });
+      console.log('Preprocessed:', `${canvas.width}x${canvas.height} -> ${this.inputSize}x${this.inputSize} (stretch)`);
     }
 
     return new ort.Tensor('float32', input, [1, 3, this.inputSize, this.inputSize]);
@@ -236,45 +205,57 @@ export class ObjectDetectionService {
     }
 
     // Determine if we have objectness score (YOLOv5 style) or just class scores (YOLOv8 style)
-    // If vectors == 4 + classes, no objectness.
-    // If vectors == 5 + classes, yes objectness.
     const hasObjectness = numVectors === (5 + this.classNames.length);
 
+    // Sigmoid for raw logits (some ONNX exports output logits, not probabilities)
+    const sigmoid = (x: number) => 1 / (1 + Math.exp(-x));
+
     const detections: Detection[] = [];
+    const classesStartOffset = hasObjectness ? 5 : 4;
+
+    // Sample raw scores once to detect if we need sigmoid (logits vs probs)
+    let sampleScores: number[] = [];
+    for (let c = 0; c < this.classNames.length; c++) {
+      if (isChannelFirst) {
+        sampleScores.push(outputData[(classesStartOffset + c) * numAnchors + 0]);
+      } else {
+        sampleScores.push(outputData[0 * numVectors + (classesStartOffset + c)]);
+      }
+    }
+    if (!this.hasLoggedModelInfo) {
+      console.log('Raw class score sample (first anchor):', sampleScores.map(s => s.toFixed(3)));
+      const minS = Math.min(...sampleScores), maxS = Math.max(...sampleScores);
+      console.log('Score range: min=', minS.toFixed(3), 'max=', maxS.toFixed(3), '(if outside 0-1, applying sigmoid)');
+    }
 
     for (let i = 0; i < numAnchors; i++) {
-        // Read box coordinates
         let cx, cy, w, h, obj = 1.0;
 
         if (isChannelFirst) {
-             // Data layout: [cx_all... cy_all... w_all... h_all... class0_all...]
-             // index for attribute A of anchor i = (offset_A * numAnchors) + i
              cx = outputData[0 * numAnchors + i];
              cy = outputData[1 * numAnchors + i];
              w  = outputData[2 * numAnchors + i];
              h  = outputData[3 * numAnchors + i];
-             
              if (hasObjectness) {
                  obj = outputData[4 * numAnchors + i];
              }
         } else {
-            // Data layout: [cx, cy, w, h, (obj), class0, class1...] for each anchor
-            // base for anchor i = i * numVectors
             const base = i * numVectors;
             cx = outputData[base + 0];
             cy = outputData[base + 1];
             w  = outputData[base + 2];
             h  = outputData[base + 3];
-
             if (hasObjectness) {
                 obj = outputData[base + 4];
             }
         }
 
-        // Calculate maximum class score
+        // Apply sigmoid if values look like logits (outside 0-1)
+        if (hasObjectness && (obj < -0.5 || obj > 1.5)) obj = sigmoid(obj);
+        else if (hasObjectness) obj = Math.max(0, Math.min(1, obj));
+
         let maxClassScore = -1;
         let classIndex = -1;
-        const classesStartOffset = hasObjectness ? 5 : 4;
 
         for (let c = 0; c < this.classNames.length; c++) {
             let score;
@@ -283,6 +264,9 @@ export class ObjectDetectionService {
             } else {
                 score = outputData[i * numVectors + (classesStartOffset + c)];
             }
+            // Normalize to probability if logits
+            if (score < -0.5 || score > 1.5) score = sigmoid(score);
+            else score = Math.max(0, Math.min(1, score));
 
             if (score > maxClassScore) {
                 maxClassScore = score;
@@ -292,33 +276,33 @@ export class ObjectDetectionService {
 
         const confidence = obj * maxClassScore;
 
-        if (confidence > 0.25) {
-            // Convert from center coordinates to top-left coordinates
-            // Normalize to [0-1] relative to the model input size
-            const x = Math.max(0, Math.min(1, (cx - w / 2) / this.inputSize));
-            const y = Math.max(0, Math.min(1, (cy - h / 2) / this.inputSize));
-            const width = Math.max(0, Math.min(1, w / this.inputSize));
-            const height = Math.max(0, Math.min(1, h / this.inputSize));
+        if (confidence > 0.15) {
+            const x = (cx - w / 2) / this.inputSize;
+            const y = (cy - h / 2) / this.inputSize;
+            const width = w / this.inputSize;
+            const height = h / this.inputSize;
 
-            // Only add detection if it's within valid bounds
-            if (x >= 0 && y >= 0 && x + width <= 1 && y + height <= 1) {
+            const xClamp = Math.max(0, Math.min(1, x));
+            const yClamp = Math.max(0, Math.min(1, y));
+            const wClamp = Math.max(0.01, Math.min(1, width));
+            const hClamp = Math.max(0.01, Math.min(1, height));
+
+            // Relaxed bounds: allow boxes that extend slightly outside [0,1]
+            const inBounds = (xClamp + wClamp) <= 1.01 && (yClamp + hClamp) <= 1.01;
+            if (inBounds && wClamp > 0.001 && hClamp > 0.001) {
                 detections.push({
-                    class: this.classNames[classIndex] || `class_${classIndex}`,
-                    confidence: confidence,
-                    bbox: [x, y, width, height]
+                    class: this.classNames[classIndex] ?? `class_${classIndex}`,
+                    confidence,
+                    bbox: [xClamp, yClamp, wClamp, hClamp]
                 });
-                
-                // Minimal logging for performance - only log occasionally
-                if (Math.random() < 0.05) { // Log 5% of detections
-                  console.log(`Detection: ${this.classNames[classIndex]} (${(confidence * 100).toFixed(1)}%)`);
-                }
             }
         }
     }
 
-    // Apply Non-Maximum Suppression (NMS)
     const finalDetections = this.applyNMS(detections);
-
+    if (!this.hasLoggedModelInfo && (detections.length > 0 || finalDetections.length > 0)) {
+      console.log('Detection pipeline:', { raw: detections.length, afterNMS: finalDetections.length });
+    }
     return finalDetections;
   }
 
@@ -396,7 +380,10 @@ export class ObjectDetectionService {
 
   async detectObjects(mediaSource: HTMLVideoElement | HTMLImageElement): Promise<Detection[]> {
     if (!this.modelLoaded || !this.session) {
-      console.warn('⚠️ Model not ready yet, skipping detection...');
+      console.warn('⚠️ Model not ready yet, skipping detection...', {
+        modelLoaded: this.modelLoaded,
+        session: !!this.session
+      });
       return []; // Return empty array instead of throwing error
     }
 
@@ -442,17 +429,14 @@ export class ObjectDetectionService {
 
       // Run inference
       
-      // Use the actual input name from the model
       const inputName = this.session.inputNames[0] || 'images';
-      console.log('Using input name:', inputName);
-      
       const feeds: Record<string, ort.Tensor> = {};
       feeds[inputName] = inputTensor;
       
       // Run inference with timeout to prevent blocking video
       const inferencePromise = this.session.run(feeds);
       const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Inference timeout')), 100) // 100ms timeout
+        setTimeout(() => reject(new Error('Inference timeout')), 500) // Increased to 500ms timeout
       );
       
       const outputs = await Promise.race([inferencePromise, timeoutPromise]) as any;

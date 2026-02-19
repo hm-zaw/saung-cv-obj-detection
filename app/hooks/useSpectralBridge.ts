@@ -288,10 +288,17 @@ export function useSpectralBridge(
       streamRef.current = stream;
       setLocalStream(stream);
 
-      // If mobile, attach to video for preview
-      if (!isHost && videoRef.current) {
+      // Always attach to video element for local camera
+      if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(() => {
+          // Autoplay might be blocked, user will need to click play
+        });
       }
+      
+      // Set status to connected for local camera
+      setStatus("connected");
+      setError(null);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Unknown error";
       setError(`Camera access denied: ${errorMessage}`);
@@ -306,7 +313,14 @@ export function useSpectralBridge(
       streamRef.current = null;
     }
     setLocalStream(null);
-  }, []);
+    setStatus("idle");
+    setError(null);
+    
+    // Clear video element
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  }, [videoRef]);
 
   // Disconnect everything
   const disconnect = useCallback(() => {

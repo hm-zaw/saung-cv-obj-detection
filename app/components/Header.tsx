@@ -47,7 +47,7 @@ export default function Header() {
         </div>
         <div className="flex items-center gap-2">
           <span className="uppercase tracking-wider">Classes:</span>
-          <span>21 (5 Hands + 16 Strings)</span>
+          <span>21 (6 Object classes)</span>
         </div>
       </div>
     </header>
